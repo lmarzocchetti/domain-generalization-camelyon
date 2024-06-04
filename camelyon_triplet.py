@@ -144,7 +144,7 @@ class ClassificationModel():
             self.optimizer.zero_grad()
             
             anchor_features, positive_features, negative_features, output = self.cl_head(x_anchor, x_positive, x_negative)
-            triplet_loss_val = self.triplet(anchor_features, positive_features, negative_features) * 100
+            triplet_loss_val = self.triplet(anchor_features, positive_features, negative_features)
             ce_loss_val = torch.nn.functional.binary_cross_entropy(output.squeeze(), y_anchor, reduction='sum')
             total_loss = triplet_loss_val + ce_loss_val
             
