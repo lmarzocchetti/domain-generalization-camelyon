@@ -1,0 +1,9 @@
+.vscode/
+
+interactive_gpu.sh
+launch_script_gpu_serial.sh
+launch_script_gpu.sh
+model_epoch_1.pt
+model_epoch_2.pt
+output_test_log
+output_log_prima_versione
