@@ -1,7 +1,4 @@
 torch==2.3.0
 torchvision==0.18.0
-torchaudio==2.3.0
-opencv-contrib-python==4.9.0.80
-scikit-learn==1.4.2
-seaborn==0.13.2
-tqdm==4.66.4
+pandas==2.2.2
+wilds==2.0.0
