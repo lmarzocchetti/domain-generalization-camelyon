@@ -1,6 +1,7 @@
 import sys
 import argparse
 import random
+
 import numpy as np
 import pandas as pd
 import torch
@@ -19,6 +20,10 @@ def set_seed(seed: int):
     np.random.seed(seed)
 
 class TripletDataset():
+    """
+    Class to generate triplets for training. It works by encapsulate the original WILDSubset (dataset)
+    and redefine the __getitem__ method to return a triplet of images.
+    """
     def __init__(self, dataset: WILDSSubset):
         self.dataset = dataset
         self.collate = dataset.collate
@@ -28,6 +33,10 @@ class TripletDataset():
         self.reset_array_filtering()
     
     def reset_array_filtering(self):
+        """
+        Reset the dictionary that contains the indexes of the samples for each label and domain.
+        (domain 1 and 2 are not present in the train set, so they are not considered here)
+        """
         frame_for_filtering = pd.DataFrame(
             np.array([np.array([i, y, meta[0]]) for (i, (y, meta)) in enumerate(zip(self.dataset.y_array, self.dataset.metadata_array))]), 
             columns=["idx", "label", "domain"]
@@ -106,6 +115,9 @@ class ClassificationModel():
 
     def train(self, train_loader, epoch):
         self.cl_head.train()
+        
+        # Freeze the feature extractor for the first 5 epochs to train the head
+        # This is done to avoid the network to learn the triplet loss too fast
         if epoch < 5:
             if isinstance(self.cl_head, nn.DataParallel):
                 self.cl_head.module.feature_extractor.eval()
@@ -118,6 +130,7 @@ class ClassificationModel():
                 self.cl_head.module.feature_extractor.requires_grad_(True)
             else:
                 self.cl_head.feature_extractor.requires_grad_(True)
+
         for i, batch in enumerate(train_loader):
             anchor, positive, negative = batch
             (x_anchor_p, y_anchor_p) = anchor
@@ -127,17 +140,19 @@ class ClassificationModel():
             (x_anchor, y_anchor) = x_anchor_p.to(device), y_anchor_p.float().to(device)
             x_positive = x_positive_p.to(device)
             x_negative = x_negative_p.to(device)
+            
             self.optimizer.zero_grad()
+            
             anchor_features, positive_features, negative_features, output = self.cl_head(x_anchor, x_positive, x_negative)
             triplet_loss_val = self.triplet(anchor_features, positive_features, negative_features) * 100
             ce_loss_val = torch.nn.functional.binary_cross_entropy(output.squeeze(), y_anchor, reduction='sum')
             total_loss = triplet_loss_val + ce_loss_val
+            
             total_loss.backward()
             self.optimizer.step()
             if i % 10 == 0:
                 print(f"Epoch {epoch}, Batch {i}, Triplet Loss: {triplet_loss_val}, CE Loss: {ce_loss_val}, Total Loss: {total_loss}")
                 sys.stdout.flush()
-                
     
     def test(self, test_loader, epoch):
         self.cl_head.eval()
@@ -177,7 +192,8 @@ class ClassificationModel():
             self.cl_head.module.load_state_dict(checkpoint['model_state_dict'])
         else:
             self.cl_head.load_state_dict(torch.load(path))
-        EPOCH = checkpoint['epoch']
+        epoch_saved = checkpoint['epoch']
+        return epoch_saved
 
 
 def resnet_for_feature_extraction() -> torchvision.models.ResNet:
@@ -228,13 +244,17 @@ def main():
     )
     val_loader = get_eval_loader("standard", val_data, batch_size=args.batch_size)
 
+    # Load the model
     densenet_extractor = resnet_for_feature_extraction()
     model = ClassificationModel(densenet_extractor, args.learning_rate)
     
+    start_epoch = 1
+    
+    # Load Weights if resuming training
     if args.resume_training is not None:
-        model.load_model(args.resume_training)
+        start_epoch = model.load_model(args.resume_training) + 1
 
-    for epoch in range(1, args.num_epochs + 1):
+    for epoch in range(start_epoch, args.num_epochs + 1):
         print(f"Starting Epoch {epoch}")
         model.train(train_loader, epoch)
         
@@ -245,6 +265,7 @@ def main():
         model.scheduler.step()
         trplt_dataset.reset_array_filtering()
 
+    # Test model
     test_data = dataset.get_subset(
         "test",
         transform=transforms.Compose(
