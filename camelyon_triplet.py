@@ -60,17 +60,25 @@ class TripletDataset():
         
         return self.dataset.__getitem__(negative)
     
+    def hard_triplet_retry(self, anchor):
+        (_, y_anchor, meta_anchor) = anchor
+        label = y_anchor.item()
+        domain = meta_anchor[0].item()
+        x_positive, _, _ = self.get_positive(label, domain)
+        x_negative, _, _ = self.get_negative(label, domain)
+        return x_positive, x_negative
+    
     def __getitem__(self, idx):
         (x_anchor, y_anchor, meta_anchor) = self.dataset.__getitem__(idx)
         label = y_anchor.item()
         domain = meta_anchor[0].item()
         x_positive, _, _ = self.get_positive(label, domain)
         x_negative, _, _ = self.get_negative(label, domain)
-        return (x_anchor, y_anchor), x_positive, x_negative
+        return (x_anchor, y_anchor, meta_anchor), x_positive, x_negative
     
     def __len__(self):
         return len(self.dataset)
-    
+
 class TripletModel(nn.Module):
     def __init__(self, backbone: torchvision.models.ResNet) -> None:
         super().__init__()
@@ -113,12 +121,16 @@ class ClassificationModel():
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=1, gamma=0.1)
         self.triplet = torch.nn.TripletMarginLoss(margin=margin)
 
-    def train(self, train_loader, epoch):
+    def train(self, train_loader, epoch, train_only_classification_head: int = 3, hard_triplet_loss_value: float = None, hard_triplet_loss_retry: int = 20):
+        '''
+        hard_triplet_loss_value: float = If the triplet loss is lower than this value, retry the hard triplet mining
+        hard_triplet_loss_retry: int = Number of retries for hard triplet mining
+        '''
         self.cl_head.train()
         
         # Freeze the feature extractor for the first 5 epochs to train the head
         # This is done to avoid the network to learn the triplet loss too fast
-        if epoch < 5:
+        if epoch <= train_only_classification_head:
             if isinstance(self.cl_head, nn.DataParallel):
                 self.cl_head.module.feature_extractor.eval()
                 self.cl_head.module.feature_extractor.requires_grad_(False)
@@ -133,7 +145,7 @@ class ClassificationModel():
 
         for i, batch in enumerate(train_loader):
             anchor, positive, negative = batch
-            (x_anchor_p, y_anchor_p) = anchor
+            (x_anchor_p, y_anchor_p, _) = anchor
             x_positive_p = positive
             x_negative_p = negative
             
@@ -144,7 +156,22 @@ class ClassificationModel():
             self.optimizer.zero_grad()
             
             anchor_features, positive_features, negative_features, output = self.cl_head(x_anchor, x_positive, x_negative)
+            
             triplet_loss_val = self.triplet(anchor_features, positive_features, negative_features)
+            
+            # Hard triplet mining
+            if hard_triplet_loss_value is not None:
+                for _ in range(hard_triplet_loss_retry):
+                    if triplet_loss_val < hard_triplet_loss_value:
+                        x_positive_p, x_negative_p = train_loader.dataset.hard_triplet_retry(anchor)
+                        x_positive = x_positive_p.to(device)
+                        x_negative = x_negative_p.to(device)
+                        
+                        anchor_features, positive_features, negative_features, output = self.cl_head(x_anchor, x_positive, x_negative)
+                        triplet_loss_val = self.triplet(anchor_features, positive_features, negative_features)
+                    else:
+                        break
+            
             ce_loss_val = torch.nn.functional.binary_cross_entropy(output.squeeze(), y_anchor, reduction='sum')
             total_loss = triplet_loss_val + ce_loss_val
             
