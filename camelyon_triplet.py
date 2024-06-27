@@ -218,7 +218,7 @@ class ClassificationModel():
         if isinstance(self.cl_head, nn.DataParallel):
             self.cl_head.module.load_state_dict(checkpoint['model_state_dict'])
         else:
-            self.cl_head.load_state_dict(torch.load(path))
+            self.cl_head.load_state_dict(checkpoint['model_state_dict'])
         epoch_saved = checkpoint['epoch']
         return epoch_saved
 
@@ -305,7 +305,7 @@ def main():
     test_loader = get_eval_loader("standard", test_data, batch_size=args.batch_size)
     
     print("Finished Training, Starting Testing")
-    model.test(test_loader, epoch)
+    model.test(test_loader, args.num_epochs)
     
 if __name__ == "__main__":
     main()
